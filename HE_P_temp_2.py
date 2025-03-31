@@ -55,7 +55,7 @@ class AlgoEvent:
         self.market_regime = "unknown"  # 市场状态: "random_walk", "trending", "mean_reverting", "unknown"
         
         # 资金管理相关变量
-        self.total_capital = 100000  # 初始资本，固定值
+        self.availableBalance = 100000  # 初始资本，固定值
         self.min_risk_percentage = 0.10  # 最小资金使用比例 (10%)
         self.max_risk_percentage = 0.50  # 最大资金使用比例 (50%)
         self.price_table = {}  # 保存每个品种的价格信息
@@ -183,6 +183,9 @@ class AlgoEvent:
         
         if not active_symbols:
             return
+        
+        res = self.evt.getAccountBalance()
+        self.availableBalance = res["availableBalance"]
             
         # 重置资金分配
         self.capital_distribution = {}
@@ -204,27 +207,15 @@ class AlgoEvent:
             return
             
         # 计算可分配的总资金范围
-        min_allocation = self.total_capital * self.min_risk_percentage
-        max_allocation = self.total_capital * self.max_risk_percentage
+        min_allocation = self.availableBalance * self.min_risk_percentage
+        max_allocation = self.availableBalance * self.max_risk_percentage
         
         # 根据价值比例初步分配资金
         for symbol in active_symbols:
             value_ratio = symbol_values[symbol] / total_value
             # 先分配最小资金比例
-            initial_allocation = self.total_capital * self.min_risk_percentage * value_ratio
-            self.capital_distribution[symbol] = initial_allocation
-            
-        # 当前总分配
-        current_total = sum(self.capital_distribution.values())
-        
-        # 如果总分配小于最小要求，逐步增加资金分配
-        if current_total < min_allocation:
-            remaining = min_allocation - current_total
-            # 按价值比例分配剩余资金
-            for symbol in active_symbols:
-                value_ratio = symbol_values[symbol] / total_value
-                additional = remaining * value_ratio
-                self.capital_distribution[symbol] += additional
+            initial_allocation = min_allocation * value_ratio
+            self.capital_distribution[symbol] = initial_allocation 
                 
         # 如果市场状态适合，增加资金分配至最大限制
         if self.market_regime in ["random_walk", "mean_reverting"]:
@@ -239,11 +230,11 @@ class AlgoEvent:
         self.total_allocated_capital = sum(self.capital_distribution.values())
         
         # 记录资金分配情况
-        self.evt.consoleLog(f"资金分配: 总资本={self.total_capital:.2f}, 分配资金={self.total_allocated_capital:.2f} " +
-                           f"({(self.total_allocated_capital/self.total_capital*100):.1f}%)")
+        self.evt.consoleLog(f"资金分配: 总资本={self.availableBalance:.2f}, 分配资金={self.total_allocated_capital:.2f} " +
+                           f"({(self.total_allocated_capital/self.availableBalance*100):.1f}%)")
         for symbol in self.capital_distribution:
             self.evt.consoleLog(f"  {symbol}: {self.capital_distribution[symbol]:.2f} " +
-                               f"({(self.capital_distribution[symbol]/self.total_capital*100):.1f}%)")
+                               f"({(self.capital_distribution[symbol]/self.availableBalance*100):.1f}%)")
 
     def update_historical_data(self, timestamp):
         """更新每个品种的历史价格数据"""
@@ -412,8 +403,8 @@ class AlgoEvent:
             pair_capital = (allocated_capital1 + allocated_capital2) / 2
             
             # 确保至少有最小资金分配
-            if pair_capital < self.total_capital * self.min_risk_percentage / len(self.symbols):
-                pair_capital = self.total_capital * self.min_risk_percentage / len(self.symbols)
+            if pair_capital < self.availableBalance * self.min_risk_percentage / len(self.symbols):
+                pair_capital = self.availableBalance * self.min_risk_percentage / len(self.symbols)
                 
             # 计算每个合约的价值
             contract_value1 = price1 * self.contractSize.get(stock1, 1) * mult1
@@ -432,7 +423,7 @@ class AlgoEvent:
             volume1 = min(volume1, self.max_position)
             volume2 = min(volume2, self.max_position)
             
-            self.evt.consoleLog(f"配对交易量计算: 总资金={self.total_capital:.2f}, 对资金={pair_capital:.2f}, "
+            self.evt.consoleLog(f"配对交易量计算: 总资金={self.availableBalance:.2f}, 对资金={pair_capital:.2f}, "
                                f"合约值1={contract_value1:.2f}, 合约值2={contract_value2:.2f}, "
                                f"量1={volume1:.2f}, 量2={volume2:.2f}")
                 
@@ -554,7 +545,7 @@ class AlgoEvent:
         
         # 如果没有分配资金，使用最小比例
         if allocated_capital <= 0:
-            allocated_capital = self.total_capital * self.min_risk_percentage / max(1, len(self.symbols))
+            allocated_capital = self.availableBalance * self.min_risk_percentage / max(1, len(self.symbols))
             
         # 计算可交易的合约数量
         max_contracts = allocated_capital / contract_value
@@ -798,6 +789,11 @@ class AlgoEvent:
         """订单反馈处理，更新持仓"""
         symbol = of.instrument
         if symbol in self.symbols and of.status == 'Filled':
+            # update current capital
+            res = self.evt.getAccountBalance()
+            self.availableBalance = res["availableBalance"]
+            self.evt.consoleLog("current availableBalance=",self.availableBalance)
+
             if of.orderRef in self.order_status:
                 order_info = self.order_status[of.orderRef]
                 
@@ -851,6 +847,10 @@ class AlgoEvent:
 
     def on_dailyPLfeed(self, pl):
         """处理每日盈亏信息"""
+        # 更新账户余额
+        res = self.evt.getAccountBalance()
+        self.availableBalance = res["availableBalance"]
+        self.evt.consoleLog(f"日盈亏更新后余额: {self.availableBalance:.2f}")
         # 显示每个交易品种的盈亏状况
         total_unrealized_pnl = 0
         
@@ -870,8 +870,8 @@ class AlgoEvent:
         self.evt.consoleLog(f"当前市场状态: {self.market_regime}, 配对交易状态: {'激活' if self.pair_trading_active else '未激活'}")
         
         # 显示当前账户资金和资金分配情况
-        pct_allocated = (self.total_allocated_capital / self.total_capital * 100) if self.total_capital > 0 else 0
-        self.evt.consoleLog(f"当前账户资金: {self.total_capital:.2f}, 已分配资金: {self.total_allocated_capital:.2f} ({pct_allocated:.1f}%)")
+        pct_allocated = (self.total_allocated_capital / self.availableBalance * 100) if self.availableBalance > 0 else 0
+        self.evt.consoleLog(f"当前账户资金: {self.availableBalance:.2f}, 已分配资金: {self.total_allocated_capital:.2f} ({pct_allocated:.1f}%)")
         
         # 如果有配对持仓，显示配对持仓状态
         if self.pair_positions:
@@ -889,6 +889,11 @@ class AlgoEvent:
     def on_openPositionfeed(self, op, oo, uo):
         """处理开仓位置信息"""
         self.evt.consoleLog(f"收到持仓更新: {op}")
+
+        # 更新账户余额
+        res = self.evt.getAccountBalance()
+        self.availableBalance = res["availableBalance"]
+        self.evt.consoleLog(f"持仓更新后余额: {self.availableBalance:.2f}")
         
         # 尝试解析持仓信息
         try:
