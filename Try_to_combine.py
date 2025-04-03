@@ -67,10 +67,10 @@ class AlgoEvent:
         self.ma_cross_active = False
 
         # 修改MA参数为动态范围
-        self.ma_min_fast = 5  # 最快均线周期
-        self.ma_max_fast = 50  # 最慢均线周期
-        self.ma_min_slow = 20
-        self.ma_max_slow = 200
+        self.ma_min_fast = 10  # 最快均线周期
+        self.ma_max_fast = 30  # 最慢均线周期
+        self.ma_min_slow = 30
+        self.ma_max_slow = 100
         self.ma_fast_period = 7  # 默认值
         self.ma_slow_period = 14  # 默认值
         self.ma_volatility_lookback = 20  # 波动率计算窗口
@@ -341,9 +341,8 @@ class AlgoEvent:
         
         # 波动率越高，使用越长的均线周期(趋势性强)
         # 波动率越低，使用越短的均线周期(均值回归)
-        # volatility_normalized = (volatility - 0.1) / 0.2  # 假设0.1-0.3是正常波动范围
-        # volatility_normalized = np.clip(volatility_normalized, 0, 1)
-        volatility_normalized = 1 / (1 + np.exp(-10*(volatility-0.15)))  # Sigmoid函数调整
+        volatility_normalized = (volatility - 0.1) / 0.2  # 假设0.1-0.3是正常波动范围
+        volatility_normalized = np.clip(volatility_normalized, 0, 1)
         
         # 计算动态周期
         self.ma_fast_period = int(
@@ -534,20 +533,6 @@ class AlgoEvent:
                 date_key = timestamp.strftime('%Y-%m-%d')
                 self.historical_data[symbol][date_key] = latest_price
 
-    def calculate_dynamic_thresholds(self, symbol1, symbol2):
-        """根据波动率动态调整entry和close阈值"""
-        # 获取两个品种的价差历史
-        spread = [
-            self.historical_data[symbol1][date] - self.hedge_ratios[f"{symbol1}_{symbol2}"] * self.historical_data[symbol2][date]
-            for date in sorted(self.historical_data[symbol1])
-        ]
-        # 计算滚动波动率
-        volatility = np.std(spread[-30:]) if len(spread)>=30 else 0.01
-        # 动态调整阈值
-        self.entry_threshold = max(0.5, min(2.0, 1.0 + (volatility - 0.02)*50)) 
-        self.close_threshold = max(0.2, min(0.5, 0.25 * (volatility / 0.02)))
-        self.evt.consoleLog(f"动态阈值调整: entry={self.entry_threshold:.2f}, close={self.close_threshold:.2f}")
-
     def analyze_pairs(self, timestamp):
         """分析可能的协整对并执行配对交易"""
         if timestamp < self.last_pair_check + self.pair_check_interval:
@@ -578,7 +563,6 @@ class AlgoEvent:
             
         self.evt.consoleLog(f"执行配对交易分析, 数据维度: {df.shape}")
         
-        WINDOW_SIZE = 30  # 30天滚动窗口
         try:
             # 寻找协整对
             cointegrated_pairs, coint_matrix = find_cointegration_pair(list(df.columns), df, threshold=0.05)
@@ -591,22 +575,11 @@ class AlgoEvent:
             # 为每个协整对计算对冲比率和均值/标准差
             for stock1, stock2 in cointegrated_pairs:
                 # 拟合线性回归找到对冲比率
-                # Y = df[stock1]
-                # X = df[stock2]
-                # X = sm.add_constant(X)
-                # model = sm.OLS(Y, X).fit()
-                # hedge_ratio = model.params[1]
-
-                hedge_ratios = []
-                for i in range(WINDOW_SIZE, len(df)):
-                    Y = df[stock1].iloc[i-WINDOW_SIZE:i]
-                    X = df[stock2].iloc[i-WINDOW_SIZE:i]
-                    model = sm.OLS(Y, sm.add_constant(X)).fit()
-                    hedge_ratios.append(model.params[1])
-    
-                # 使用最近期的对冲比率
-                hedge_ratio = np.mean(hedge_ratios[-5:]) if hedge_ratios else 1.0
-
+                Y = df[stock1]
+                X = df[stock2]
+                X = sm.add_constant(X)
+                model = sm.OLS(Y, X).fit()
+                hedge_ratio = model.params[1]
                 
                 # 计算价差和z-score
                 spread = Y - hedge_ratio * df[stock2]
@@ -642,8 +615,7 @@ class AlgoEvent:
             pair_key = f"{stock1}_{stock2}"
             if pair_key not in self.hedge_ratios:
                 continue
-            
-            self.calculate_dynamic_thresholds(stock1, stock2)
+                
             hedge_ratio = self.hedge_ratios[pair_key]
             mean_spread = self.mean_spreads[pair_key]
             std_spread = self.std_spreads[pair_key]
@@ -660,7 +632,7 @@ class AlgoEvent:
             # 检查交易信号
             pair_position_key = f"{stock1}_{stock2}"
             
-            # # 如果已经持有该对的仓位，检查是否应该平仓
+            # 如果已经持有该对的仓位，检查是否应该平仓
             if pair_position_key in self.pair_positions:
                 current_position = self.pair_positions[pair_position_key]
                 # 如果z-score接近0或者与开仓方向相反，考虑平仓
@@ -751,7 +723,7 @@ class AlgoEvent:
                 self.evt.sendOrder(order2)
                 self.current_position[stock1] -= volume1  # 卖出
                 self.current_position[stock2] += volume2  # 买入
-                
+
                 self.pair_positions[pair_key] = 1  # 记录多头对仓位
                 self.evt.consoleLog(f"开仓配对交易: 卖出 {stock1} {volume1:.2f}单位, 买入 {stock2} {volume2:.2f}单位, "
                                     f"对冲比率: {hedge_ratio:.4f}, Z值: {z_score:.4f}")
@@ -780,7 +752,7 @@ class AlgoEvent:
                 self.evt.sendOrder(order2)
                 self.current_position[stock1] += volume1  # 买入
                 self.current_position[stock2] -= volume2  # 卖出
-                
+
                 self.pair_positions[pair_key] = -1  # 记录空头对仓位
                 self.evt.consoleLog(f"开仓配对交易: 买入 {stock1} {volume1:.2f}单位, 卖出 {stock2} {volume2:.2f}单位, "
                                     f"对冲比率: {hedge_ratio:.4f}, Z值: {z_score:.4f}")
@@ -808,7 +780,6 @@ class AlgoEvent:
                     )
                     self.evt.sendOrder(close_order)
                     self.current_position[order['instrument']] -= order['buysell'] * order['buysell']
-
             
             # 强制检查并对冲残留持仓
             for symbol in [stock1, stock2]:
@@ -1019,7 +990,6 @@ class AlgoEvent:
                 self.current_position[symbol] = 0
                 self.position_cost[symbol] = 0
 
-
     # Closs all position from previous strategy
     def close_all_pre_positions(self, pre_market_regime):
         if pre_market_regime== "mean_reverting":
@@ -1028,7 +998,6 @@ class AlgoEvent:
             self.close_all_ma_cross_positions()
         else:
             self.close_all_market_making_positions()
-
 
     # Key: Strategy Decision
     def check_trading_strategy(self, symbol,md):
@@ -1129,7 +1098,6 @@ class AlgoEvent:
             # 更新本地记录
             self.current_position[symbol] -= hedge_side * reduce_vol
 
-
     # only process pair trading related
     def on_bulkdatafeed(self, isSync, bd, ab):
         """处理批量数据更新"""
@@ -1202,6 +1170,16 @@ class AlgoEvent:
         # 更新价格表
         self.price_history[symbol].append(md.midPrice)
         self.price_table[symbol] = md.midPrice
+
+            # 记录收益率
+        if len(self.price_history[symbol]) >= 2:
+            prev_price = self.price_history[symbol][-2]
+            current_price = md.midPrice
+            ret = (current_price - prev_price) / prev_price
+            
+            if symbol not in self.hist_returns:
+                self.hist_returns[symbol] = deque(maxlen=250)  # 存储1年数据
+            self.hist_returns[symbol].append(ret)
 
         # 执行做市策略或配对交易策略
         self.check_trading_strategy(symbol, md)
@@ -1318,7 +1296,7 @@ class AlgoEvent:
                                f"总未实现盈亏: {total_unrealized_pnl:.2f}")
         else:
             self.evt.consoleLog(f"日盈亏更新, 总未实现盈亏: {total_unrealized_pnl:.2f}")
-
+        
         if pl['Acdate'] > self.last_var_check + self.var_check_interval:
             current_var = self.calculate_portfolio_var()
             self.evt.consoleLog(f"VaR监控: 当前风险值={current_var:.2f}, 净值占比={(current_var/self.availableBalance):.2%}")
