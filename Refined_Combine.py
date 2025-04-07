@@ -1048,12 +1048,12 @@ class AlgoEvent:
         
         # 根据市场状态激活不同策略
 
-        #均值回归市场 用 配对交易
+        #均值回归市场 用  Market Making暂代
         if self.market_regime == "mean_reverting" and len(self.symbols) >= 2:
-            self.pair_trading_active = True
+            self.pair_trading_active = False
             self.ma_cross_active = False
-            self.update_historical_data(md.timestamp)
-            self.analyze_pairs(md.timestamp)
+            #执行MM策略
+            self.place_market_making_orders(symbol,md)
 
         #趋势市场 用 MA Cross策略
         elif self.market_regime == "trending":
